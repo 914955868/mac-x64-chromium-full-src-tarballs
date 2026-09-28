@@ -1,0 +1,15 @@
+# Reduce noise
+[advice]
+	detachedHead = false
+
+# The following settings are used in Google's tarball-building process,
+# visible under third_party/rust-src/.git/
+
+[init]
+	defaultBranch = master
+
+[user]
+	name = mogoweb
+	email = mogoweb@gmail.com
+
+# end gitconfig
