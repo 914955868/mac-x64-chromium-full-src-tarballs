@@ -27,7 +27,7 @@ Chromium 的官方源码获取方式依赖 `depot_tools`、`fetch`、`gclient sy
 2. **归档 Chromium third_party 依赖**
 3. **归档 Chromium 官方构建工具链**
 4. **归档 Linux Sysroot**
-5. **支持 ARM64 交叉编译**
+5. **支持 ARM64 / LoongArch64 交叉编译**
 6. **减少离线环境准备 Chromium 构建环境的工作量**
 7. **固定 Chromium 版本及对应依赖，便于长期维护和问题复现**
 8. **通过 SHA-256 校验保证源码包完整性**
@@ -69,6 +69,45 @@ chromium-full-src-140.0.7339.82-linux-arm64.tar.zst
 ```
 
 该版本面向 Linux ARM64 Chromium 的移植和构建。
+
+### LoongArch64 (loong64)
+
+LoongArch64 不是 Chromium 官方支持的目标架构，Chromium 官方不提供对应的 Sysroot 和 Clang/LLVM 工具链。
+
+因此 loong64 架构的源码包使用 Loongnix 提供的构建资源：
+
+```text
+Sysroot:   http://ftp.loongnix.cn/browser/build/sysroot/debian_bullseye_loongarch64-sysroot.tar.bz2
+Toolchain: http://ftp.loongnix.cn/browser/build/toolchain/Release+Asserts-126.tar.bz2
+Patch:     https://github.com/loongson/chromium/blob/loongarch-patches/chromium126/0001-la64-cross-CH126-Add-loongarch-build-support-for-old-new-w.patch
+```
+
+其中：
+
+* Sysroot 解压到 `src/build/linux/`（目录名 `debian_bullseye_loongarch64-sysroot`）；
+* 工具链解压到 `src/third_party/llvm-build/`，即替换 `src/third_party/llvm-build/Release+Asserts`：
+
+```bash
+rm -rf src/third_party/llvm-build/Release+Asserts
+tar -xjvf Release+Asserts-126.tar.bz2 -C src/third_party/llvm-build/
+```
+
+* 源码同步完成后，在 `src/` 下打入 Loongson 的 LoongArch64 适配 patch：
+
+```bash
+cd src
+patch -Np1 -i 0001-la64-cross-CH126-Add-loongarch-build-support-for-old-new-w.patch
+```
+
+该 patch 覆盖 `BUILD.gn`、`build/`、`base/`、`sandbox/`、`media/`、`third_party/` 等 131 个文件，为 `use_nw` old world / new world 构建提供 LoongArch 支持，因此必须在 `gclient runhooks` 之前应用。
+
+由于 Loongnix 只提供 Chromium 126 对应的构建资源，**loong64 架构的 Chromium 版本被限制为 126**（例如 `126.0.6478.126`），其他版本会直接报错退出。
+
+例如：
+
+```text
+chromium-full-src-126.0.6478.126-linux-loong64.tar.zst
+```
 
 ## 不包含内容
 
@@ -301,14 +340,14 @@ autoninja -C out/Release chrome
 x86_64 Linux Host
         │
         │ Chromium Clang / LLVM
-        │ ARM64 Sysroot
+        │ ARM64 Sysroot / LoongArch64 Sysroot
         ↓
-Linux ARM64 Chromium
+Linux ARM64 Chromium / Linux LoongArch64 Chromium
 ```
 
 因此特别适合以下场景：
 
-* 国产 ARM64 CPU；
+* 国产 ARM64 / LoongArch64 CPU；
 * 信创桌面操作系统；
 * ARM64 Linux 桌面环境；
 * Chromium ARM64 移植；
@@ -330,6 +369,9 @@ checkout 指定 Revision
         │
         ↓
 gclient sync
+        │
+        ↓
+应用目标架构 patch（仅 loong64）
         │
         ↓
 install-build-deps
@@ -413,9 +455,12 @@ chromium-<version>-<arch>
 ```text
 chromium-140.0.7339.82-arm64
 chromium-140.0.7339.82-amd64
+chromium-126.0.6478.126-loong64
 ```
 
 这种方式可以同时维护同一 Chromium 版本针对不同目标架构的源码包。
+
+需要注意的是，loong64 架构只支持 Chromium 126。
 
 ## 可复现性
 
@@ -463,9 +508,9 @@ Chromium 源码及其中包含的第三方组件分别遵循其各自的许可�
 
 为国产桌面操作系统准备固定版本的 Chromium 源码及构建依赖，降低构建环境准备成本。
 
-### 国产 CPU / ARM64 平台
+### 国产 CPU / ARM64 / LoongArch64 平台
 
-提供 ARM64 Sysroot 和 Chromium 构建依赖，方便在 x86_64 Linux 主机上进行 ARM64 Chromium 交叉编译。
+提供 ARM64、LoongArch64 Sysroot 和 Chromium 构建依赖，方便在 x86_64 Linux 主机上进行 ARM64、LoongArch64 Chromium 交叉编译。
 
 ### 离线环境
 
@@ -532,8 +577,10 @@ autoninja -C out/Release chrome
 * [x] SHA-256 完整性校验
 * [x] GitHub Release 自动发布
 * [x] 大型源码包自动拆分
+* [x] LoongArch64 (loong64) 源码包归档（限制 Chromium 126）
 * [ ] ARM64 离线构建自动验证
 * [ ] AMD64 离线构建自动验证
+* [ ] LoongArch64 离线构建自动验证
 * [ ] 多个 Chromium 稳定版本长期归档
 * [ ] 构建元数据进一步标准化
 * [ ] 提供更加完善的离线构建文档

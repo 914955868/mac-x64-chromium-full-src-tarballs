@@ -12,6 +12,7 @@
 #
 # Example:
 #   package_chromium_full.sh 140.0.7339.82 arm64
+#   package_chromium_full.sh 126.0.6478.126 loong64
 #
 # Environment:
 #   ZSTD_LEVEL     zstd compression level (default: 6)
@@ -27,6 +28,15 @@ umask 022
 SPLIT_PART_SZ="${SPLIT_PART_SZ:-1900M}"
 ZSTD_LEVEL="${ZSTD_LEVEL:-6}"
 PGO_GS_URL_BASE="chromium-optimization-profiles/pgo_profiles"
+
+# LoongArch64 (loong64) is not supported by upstream Chromium: there is no
+# official sysroot or Clang/LLVM toolchain for it. Both are provided by
+# Loongnix, and only for Chromium 126.
+LOONG64_CHROMIUM_MAJOR_VERSION="126"
+LOONG64_SYSROOT_URL="http://ftp.loongnix.cn/browser/build/sysroot/debian_bullseye_loongarch64-sysroot.tar.bz2"
+LOONG64_TOOLCHAIN_URL="http://ftp.loongnix.cn/browser/build/toolchain/Release+Asserts-126.tar.bz2"
+LOONG64_PATCH_URL="https://github.com/loongson/chromium/raw/loongarch-patches/chromium126/0001-la64-cross-CH126-Add-loongarch-build-support-for-old-new-w.patch"
+LOONG64_PATCH_FILE="0001-la64-cross-CH126-Add-loongarch-build-support-for-old-new-w.patch"
 
 log_disk() {
 	clog "Disk usage:"
@@ -78,6 +88,33 @@ sync_sources() {
 		die "gclient sync failed"
 }
 
+# LoongArch64 is not supported by upstream Chromium, so the Loongson port
+# patch has to be applied on top of the checked out sources. It is applied
+# right after the sync so a broken patch fails before the expensive hooks.
+#
+# Usage:
+#   apply_target_patches(arch)
+#
+apply_target_patches() {
+	local arch="${1}"
+	case "${arch}" in
+		loong64)
+			clog "Downloading LoongArch64 adaptation patch"
+			curl --fail --location --retry 3 --retry-delay 5 --max-time 600 \
+				--no-progress-meter -o "${LOONG64_PATCH_FILE}" "${LOONG64_PATCH_URL}" ||
+				die "Failed to download ${LOONG64_PATCH_URL}"
+
+			clog "Applying ${LOONG64_PATCH_FILE} to src"
+			pushd src &> /dev/null || die "Failed to enter src directory"
+			patch -Np1 -i "../${LOONG64_PATCH_FILE}" ||
+				die "Failed to apply ${LOONG64_PATCH_FILE} (is \"patch\" installed?)"
+			popd &> /dev/null || die "Failed to leave src directory"
+
+			rm -f "${LOONG64_PATCH_FILE}"
+			;;
+	esac
+}
+
 run_hooks() {
 	clog "Running gclient hooks (Clang/LLVM, sysroots, Node.js, ...)"
 	gclient runhooks ||
@@ -115,6 +152,32 @@ download_v8_pgo_profiles() {
 	fi
 }
 
+# This function downloads a tarball and extracts it into a directory.
+#
+# Usage:
+#   download_and_extract URL DEST_DIR
+#
+download_and_extract() {
+	local url="${1}"
+	local dest="${2}"
+	local tmp_dir
+
+	tmp_dir=$(mktemp -d) || die "Failed to create a temporary download directory"
+	local archive="${tmp_dir}/$(basename "${url}")"
+
+	clog "Downloading ${url}"
+	curl --fail --location --retry 3 --retry-delay 5 --max-time 7200 \
+		--no-progress-meter -o "${archive}" "${url}" ||
+		die "Failed to download ${url}"
+
+	clog "Extracting $(basename "${archive}") into ${dest}"
+	mkdir -p "${dest}" || die "Failed to create ${dest}"
+	tar -xjf "${archive}" -C "${dest}" ||
+		die "Failed to extract ${archive} into ${dest}"
+
+	rm -rf "${tmp_dir}"
+}
+
 install_target_sysroot() {
 	local arch="${1}"
 	case "${arch}" in
@@ -125,6 +188,26 @@ install_target_sysroot() {
 			clog "Installing arm64 Linux sysroot"
 			src/build/linux/sysroot_scripts/install-sysroot.py --arch=arm64 ||
 				die "Failed to install arm64 sysroot"
+			;;
+		loong64)
+			clog "Installing loong64 (LoongArch64) Linux sysroot from Loongnix"
+			download_and_extract "${LOONG64_SYSROOT_URL}" "src/build/linux" ||
+				die "Failed to install loong64 sysroot"
+			;;
+	esac
+}
+
+# The upstream prebuilt Clang/LLVM toolchain has no LoongArch support, so
+# loong64 builds use the Loongnix toolchain instead. It is installed after
+# runhooks so the clang hook cannot overwrite it.
+install_target_toolchain() {
+	local arch="${1}"
+	case "${arch}" in
+		loong64)
+			clog "Installing loong64 (LoongArch64) Clang/LLVM toolchain from Loongnix"
+			rm -rf "src/third_party/llvm-build/Release+Asserts"
+			download_and_extract "${LOONG64_TOOLCHAIN_URL}" "src/third_party/llvm-build" ||
+				die "Failed to install loong64 toolchain"
 			;;
 	esac
 }
@@ -156,8 +239,13 @@ verify_toolchain() {
 		die "Rust toolchain not found under src/third_party/rust-toolchain"
 	fi
 
+	local sysroot_pattern="*${arch}-sysroot"
+	case "${arch}" in
+		loong64) sysroot_pattern="*loongarch64-sysroot" ;;
+	esac
+
 	local sysroot
-	sysroot=$(find src/build/linux -maxdepth 1 -type d -name "*${arch}-sysroot" | head -n 1 || true)
+	sysroot=$(find src/build/linux -maxdepth 1 -type d -name "${sysroot_pattern}" | head -n 1 || true)
 	if [ -n "${sysroot}" ]; then
 		clog "Sysroot: $(basename "${sysroot}")"
 		echo "- Sysroot: \`$(basename "${sysroot}")\`" >> "${summary}" 2> /dev/null || true
@@ -210,6 +298,17 @@ Excluded:
 - src/out
 - Git metadata
 EOF
+
+	if [ "${arch}" = "loong64" ]; then
+		cat >> chromium-build-manifest.txt <<EOF
+
+LoongArch64 (loong64):
+- Chromium major version pinned to ${LOONG64_CHROMIUM_MAJOR_VERSION}
+- Sysroot: ${LOONG64_SYSROOT_URL}
+- Toolchain: ${LOONG64_TOOLCHAIN_URL}
+- Patch: ${LOONG64_PATCH_URL}
+EOF
+	fi
 }
 
 # Git metadata must go per README; the package targets offline builds and
@@ -281,12 +380,18 @@ main() {
 	fi
 
 	case "${arch}" in
-		arm64 | amd64) ;;
-		*) die "Unsupported target architecture: ${arch} (expected arm64 or amd64)" ;;
+		arm64 | amd64 | loong64) ;;
+		*) die "Unsupported target architecture: ${arch} (expected arm64, amd64 or loong64)" ;;
 	esac
 
 	if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 		die "Invalid Chromium version: ${version}"
+	fi
+
+	# LoongArch64 is only available as a Chromium 126 port; there is no sysroot
+	# or toolchain for any other version.
+	if [ "${arch}" = "loong64" ] && [ "${version%%.*}" != "${LOONG64_CHROMIUM_MAJOR_VERSION}" ]; then
+		die "LoongArch64 (loong64) requires Chromium ${LOONG64_CHROMIUM_MAJOR_VERSION}.x, got ${version}"
 	fi
 
 	# Some Google Python scripts start with "#!/usr/bin/env python"
@@ -314,6 +419,7 @@ main() {
 
 	configure_gclient "${version}"
 	sync_sources
+	apply_target_patches "${arch}"
 	run_hooks
 	#	download_pgo_profiles
 	download_v8_pgo_profiles
@@ -321,6 +427,7 @@ main() {
 	# (src/tools/rust/update_rust.py) during runhooks; verify_toolchain below
 	# fails the run if it is missing.
 	install_target_sysroot "${arch}"
+	install_target_toolchain "${arch}"
 	verify_toolchain "${arch}"
 	generate_manifest "${version}" "${arch}"
 	cleanup_before_pack
