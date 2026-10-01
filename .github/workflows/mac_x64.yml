@@ -42,3 +42,14 @@ jobs:
           echo "xcode info:"
           xcode-select -p || echo "xcode-select -p failed"
           xcodebuild -version || echo "xcodebuild -version failed"
+          echo "No version given, resolving latest stable..."
+          curl_version=$(curl --fail-with-body --max-time 30 --no-progress-meter \
+              'https://versionhistory.googleapis.com/v1/chrome/platforms/linux/channels/stable/versions/all/releases?order_by=version%20desc')
+          echo "curl_version:$curl_version"
+          version =  $(echo $curl_version | jq -r '.releases[0].version')
+          echo "version:$version"
+          maccurl_version=$(curl --fail-with-body --max-time 30 --no-progress-meter \
+              'https://versionhistory.googleapis.com/v1/chrome/platforms/mac/channels/stable/versions/all/releases?order_by=version%20desc')
+          echo "maccurl_version:$curl_version"
+          macversion =  $(echo $maccurl_version | jq -r '.releases[0].version')
+          echo "macversion:$macversion"
