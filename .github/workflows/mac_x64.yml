@@ -35,3 +35,7 @@ jobs:
         run: |
           echo Add other actions to build,
           echo test, and deploy your project.
+          echo "uname -a:"
+          uname -a
+          echo "df -h ./:"
+          df -h ./
