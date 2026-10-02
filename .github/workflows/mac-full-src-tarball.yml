@@ -1,4 +1,4 @@
-name: Chromium Full Source Tarball
+name: Mac Chromium Full Source Tarball
 
 # Generates a complete, buildable Chromium source environment tarball:
 # full source + third_party deps + Clang/LLVM + Rust
