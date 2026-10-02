@@ -40,7 +40,8 @@ jobs:
       - name: Install zstd
         run: |
           echo ">>> Install zstd"
-          brew install zstd
+          # runner insalled.
+          #brew install zstd
           echo "After install zstd:"
           echo ">>> $(which zstd)"
 

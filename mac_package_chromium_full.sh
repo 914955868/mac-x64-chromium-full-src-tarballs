@@ -324,7 +324,7 @@ main() {
 	# Note: the Rust toolchain is fetched by the unconditional DEPS hook
 	# (src/tools/rust/update_rust.py) during runhooks; verify_toolchain below
 	# fails the run if it is missing.
-	install_target_sysroot "${arch}"
+	#install_target_sysroot "${arch}"
 	install_target_toolchain "${arch}"
 	verify_toolchain "${arch}"
 	generate_manifest "${version}" "${arch}"
