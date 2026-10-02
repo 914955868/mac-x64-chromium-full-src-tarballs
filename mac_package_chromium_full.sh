@@ -200,8 +200,6 @@ Included:
 - V8 PGO profiles
 - depot_tools and gclient config
 
-Packaged sysroots:
-${sysroots}
 
 Cross compilation:
 - Prebuilt toolchains run on Intel Mac hosts
