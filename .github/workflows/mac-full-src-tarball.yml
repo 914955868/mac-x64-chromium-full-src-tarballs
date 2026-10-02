@@ -1,0 +1,187 @@
+name: Chromium Full Source Tarball
+
+# Generates a complete, buildable Chromium source environment tarball:
+# full source + third_party deps + Clang/LLVM + Rust
+# + hook dependencies + PGO profiles + depot_tools.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Chromium version (e.g. 140.0.7339.82). Leave empty for latest stable.'
+        required: false
+        default: ''
+        type: string
+      arch:
+        description: 'Target architecture'
+        required: true
+        default: 'x64'
+        type: choice
+        options:
+          - arm64
+          - x64
+  push:
+    tags:
+      - 'chromium-*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chromium-full-src-tarball-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate-tarball:
+    name: Generate full source tarball
+    runs-on: macos-15-intel
+    timeout-minutes: 350
+
+    steps:
+      - name: Install zstd
+        run: |
+          echo ">>> Install zstd"
+          brew install zstd
+          echo "After install zstd:"
+          echo ">>> $(which zstd)"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version and architecture
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # Tag format: chromium-<version>-<arch>, e.g. chromium-140.0.7339.82-x64
+            tag="${GITHUB_REF_NAME}"
+            rest="${tag#chromium-}"
+            if [ "${rest}" = "${tag}" ]; then
+              echo "::error::Tag must be named chromium-<version>-<arch>"
+              exit 1
+            fi
+            arch="${rest##*-}"
+            version="${rest%"-${arch}"}"
+            # A release created via API also creates its tag, which re-triggers
+            # this workflow. Skip if the release already exists.
+            rel_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+              -H "Authorization: token ${GH_TOKEN}" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}")
+            if [ "${rel_code}" = "200" ]; then
+              echo "Release ${tag} already exists, skipping packaging"
+              skip="true"
+            fi
+          else
+            version="${{ inputs.version }}"
+            arch="${{ inputs.arch }}"
+          fi
+          skip="${skip:-false}"
+
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            if [ -n "${version}" ]; then
+              echo "::error::Invalid version format: ${version}"
+              exit 1
+            fi
+            echo "No version given, resolving latest stable..."
+            version=$(curl --fail-with-body --max-time 30 --no-progress-meter \
+              'https://versionhistory.googleapis.com/v1/chrome/platforms/mac/channels/stable/versions/all/releases?order_by=version%20desc' \
+              | jq -r '.releases[0].version')
+          fi
+
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version: ${version}"
+            exit 1
+          fi
+          case "${arch}" in
+            arm64|x64) ;;
+            *) echo "::error::Invalid architecture: ${arch}"; exit 1 ;;
+          esac
+
+          # Verify the tag exists upstream before the long sync
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 \
+            -H "Authorization: token ${GH_TOKEN}" \
+            "https://api.github.com/repos/chromium/chromium/git/ref/tags/${version}")
+          if [ "${code}" != "200" ]; then
+            echo "::error::Tag ${version} not found in chromium/chromium (HTTP ${code})"
+            exit 1
+          fi
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "arch=${arch}" >> "${GITHUB_OUTPUT}"
+          echo "skip=${skip}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved: version=${version}, arch=${arch}, skip=${skip}"
+
+      - name: Package Chromium full source tarball
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          ./mac_package_chromium_full.sh \
+            "${{ steps.resolve.outputs.version }}" \
+            "${{ steps.resolve.outputs.arch }}"
+
+      - name: Upload manifest and hashes
+        if: steps.resolve.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-full-src-manifest-and-hashes
+          path: |
+            out/SHA256SUMS
+            out/SHA256SUMS.parts
+            chromium-full-src-*/chromium-build-manifest.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Prepare release notes
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          version="${{ steps.resolve.outputs.version }}"
+          arch="${{ steps.resolve.outputs.arch }}"
+          pkg="chromium-full-src-${version}-mac-${arch}"
+          {
+            echo "## Chromium full source ${version} (${arch})"
+            echo
+            echo '```text'
+            cat "${pkg}/chromium-build-manifest.txt"
+            echo '```'
+            echo
+            echo "### Download and verify"
+            echo
+            echo '```bash'
+            echo "cat ${pkg}.tar.zst.part-* > ${pkg}.tar.zst"
+            echo "sha256sum -c SHA256SUMS"
+            echo "tar --use-compress-program=zstd -xf ${pkg}.tar.zst"
+            echo '```'
+            echo
+            echo "### Cross compile (x86_64 host -> linux/${arch})"
+            echo
+            echo '```bash'
+            echo "# 1. Generate build config"
+            echo "cd ${pkg}/src"
+            echo "gn gen out/Release --args='target_os=\"mac\" target_cpu=\"${arch}\" is_debug=false'"
+            echo
+            echo "# 2. Build"
+            echo "autoninja -C out/Release chrome"
+            echo '```'
+            echo
+            echo "Notes:"
+            echo "- The prebuilt Clang/LLVM and Rust toolchains run on x64 hosts"
+            echo "- PGO profiles (Chrome mac + V8) are pre-downloaded so offline builds resolve them without network access"
+            echo "- If PGO causes issues on ${arch}, set \`chrome_pgo_phase=0\` in gn args"
+            echo '```'
+            cat out/SHA256SUMS
+            echo '```'
+          } > release-notes.md
+
+      - name: Create GitHub Release
+        if: steps.resolve.outputs.skip != 'true'
+        uses: ncipollo/release-action@440c8c1cb0ed28b9f43e4d1d670870f059653174 # v1.16.0
+        with:
+          artifacts: "out/*"
+          bodyFile: release-notes.md
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          replacesArtifacts: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: chromium-mac-${{ steps.resolve.outputs.version }}-${{ steps.resolve.outputs.arch }}
+          name: Chromium mac ${{ steps.resolve.outputs.version }} full source (${{ steps.resolve.outputs.arch }})
